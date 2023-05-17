@@ -1,30 +1,55 @@
 # Import the required modules
-import sys, os
+import sys, os, io
 import pydub
 import openai
 import srt
-import moviepy.editor as mp
-from moviepy.video.tools.subtitles import SubtitlesClip
+
+segment_limit = 21
 
 # Set the OpenAI API key
 openai.api_key = os.environ.get("OPENAI_KEY")
+
+# splits an audio segment into chunks of a given size limit
+def split_audio_to_size(audio, size_limit):
+    # Convert the size limit from mb to bytes
+    max_size = size_limit * 1024 * 1024
+
+    # Define an empty list to store the chunks
+    chunks = []
+
+    # Loop until the audio segment is empty
+    while len(audio) > 0:
+        # Calculate the bitrate of the audio segment in bytes per millisecond
+        bitrate = audio.frame_rate * audio.frame_width * audio.channels / 1000
+
+        # Calculate the maximum duration of each chunk in milliseconds
+        max_duration = max_size / bitrate
+
+        # Split the audio segment into a chunk and the remaining part
+        chunk, audio = audio[:max_duration], audio[max_duration:]
+
+        # Append the chunk to the list of chunks
+        chunks.append(chunk)
+
+    # Return the list of chunks
+    return chunks
 
 audio_segment_size_in_mb = lambda audio_segment:  audio_segment.frame_count() * audio_segment.frame_width / (1024 * 1024)
 
 # Define a function to transcribe an audio segment using OpenAI
 def transcribe(segment):
-  # Convert the segment to wav format and save it to a temporary file
-  segment.export("temp.wav", format="wav")
-  # Open the file in binary mode
-  with open("temp.wav", "rb") as f:
-    # Call the OpenAI speech to text API and get the response
-    response = openai.Audio.transcribe('whisper-1', f)
+  # Convert the segment to wav format and save it to an in-memory file-like object
+  file_like_object = io.BytesIO()
+  setattr(file_like_object, "name", "audio.wav")
+  segment.export(file_like_object, format="wav")
+  file_like_object.seek(0)  # reset file pointer to the beginning
+  # Call the OpenAI speech to text API and get the response
+  response = openai.Audio.transcribe('whisper-1', file_like_object)
   # Return the transcription text
   return response["text"]
 
 # def split_on_silence_or_half(segment):
-#   if audio_segment_size_in_mb(segment) > 25:
-
+#   if audio_segment_size_in_mb(segment) > segment_limit:
 
 # Define a recursive function to split and transcribe a segment until its text is less than 61 characters
 def split_and_transcribe(segment, start, end, transcriptions):
@@ -51,8 +76,8 @@ audio = pydub.AudioSegment.from_file(path)
 size_in_mb = audio_segment_size_in_mb(audio)
 
 # Split the audio into segments
-if size_in_mb > 25:
-  segments = pydub.silence.split_on_silence(audio)
+if size_in_mb > segment_limit:
+  segments = split_audio_to_size(audio, segment_limit)
 else:
   segments = [audio]
 
@@ -88,9 +113,5 @@ srt_path = path.rsplit(".", 1)[0] + ".srt"
 with open(srt_path, "w") as f:
   f.write(srt_file)
 
-# Load the original file using moviepy and attach the SRT file to it using moviepy's subclip method
-clip = mp.VideoFileClip(path).subclip()
-generator = lambda txt: mp.TextClip(txt, font='Georgia-Regular', fontsize=24, color='white')
-clip_with_subtitles = mp.CompositeVideoClip([clip, SubtitlesClip(srt_path).set_position(("center", "bottom"))])
-# Export the clip with subtitles in the same format as before using moviepy's write_videofile method
-clip_with_subtitles.write_videofile(path)
+new_path = path.rsplit(".", 1)[0] + "_subtitled.mp4"
+os.system (f"ffmpeg -i {path} -i {srt_path} -c:v copy -c:a copy -c:s mov_text {new_path}")
